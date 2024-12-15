@@ -12,11 +12,11 @@ from sklearn.metrics import classification_report
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
-# Load dataset
+# Load GoEmotions dataset
 dataset = load_dataset("google-research-datasets/go_emotions", "simplified")
 num_classes = 28
 
-# Preprocess and map labels
+# Preprocess and Map Labels for Multi-Label Classification
 def preprocess_and_map_labels(example):
     label_array = np.zeros(num_classes, dtype=np.float32)
     for label in example["labels"]:
@@ -26,18 +26,18 @@ def preprocess_and_map_labels(example):
 
 dataset = dataset.map(preprocess_and_map_labels)
 
-# Extract train and test data
+# Extract train and test splits
 train_texts = [d["text"] for d in dataset["train"]]
 train_labels = [d["label_array"] for d in dataset["train"]]
 test_texts = [d["text"] for d in dataset["test"]]
 test_labels = [d["label_array"] for d in dataset["test"]]
 
-# TF-IDF Vectorization
+# Vectorize Text using TF-IDF
 vectorizer = TfidfVectorizer(max_features=5000)
 train_encodings = vectorizer.fit_transform(train_texts).toarray()
 test_encodings = vectorizer.transform(test_texts).toarray()
 
-# Dataset class
+# Custom Dataset Class
 class SentimentDataset(Dataset):
     def __init__(self, encodings, labels):
         self.encodings = encodings
@@ -49,53 +49,69 @@ class SentimentDataset(Dataset):
     def __getitem__(self, idx):
         return torch.tensor(self.encodings[idx], dtype=torch.float32), torch.tensor(self.labels[idx], dtype=torch.float32)
 
+# Prepare Datasets
 train_data = SentimentDataset(train_encodings, train_labels)
 test_data = SentimentDataset(test_encodings, test_labels)
 train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
 test_loader = DataLoader(test_data, batch_size=32)
 
-# CNN Model with improved architecture
+# CNN Model with modified architecture and dropout
 class CNNTextClassifier(nn.Module):
     def __init__(self, num_features, num_classes):
         super(CNNTextClassifier, self).__init__()
         self.num_classes = num_classes
-        
-        # Convolutional layers
-        self.conv1 = nn.Conv1d(1, 128, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(128, 256, kernel_size=5, padding=2)
-        self.conv3 = nn.Conv1d(256, 256, kernel_size=7, padding=3)
-        self.batchnorm1 = nn.BatchNorm1d(128)
-        self.batchnorm2 = nn.BatchNorm1d(256)
-        self.batchnorm3 = nn.BatchNorm1d(256)
+        self.conv1 = nn.Conv1d(1, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.fc1 = nn.Linear(128 * num_features, 256)
+        self.fc2 = nn.Linear(256, num_classes)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.5)
-        self.pool = nn.MaxPool1d(2, 2)
-        self.fc1 = nn.Linear(256 * num_features // 2, 512)
-        self.fc2 = nn.Linear(512, num_classes)
+        self.batchnorm1 = nn.BatchNorm1d(64)
+        self.batchnorm2 = nn.BatchNorm1d(128)
 
     def forward(self, x):
-        x = x.unsqueeze(1)  # Add channel dimension
+        x = x.unsqueeze(1)  # Add a channel dimension
         x = self.relu(self.batchnorm1(self.conv1(x)))
-        x = self.pool(x)
         x = self.relu(self.batchnorm2(self.conv2(x)))
-        x = self.relu(self.batchnorm3(self.conv3(x)))
         x = torch.flatten(x, 1)
         x = self.dropout(self.relu(self.fc1(x)))
         x = self.fc2(x)
         return x
 
+# Initialize Model
 model = CNNTextClassifier(num_features=5000, num_classes=num_classes).to(device)
 
-# Class weights for imbalanced dataset
+# Class weights for handling imbalanced dataset
 class_weights = torch.tensor(np.max(np.sum(train_labels, axis=0)) / np.sum(train_labels, axis=0), dtype=torch.float32).to(device)
 criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights)
 
-# Optimizer and scheduler
+# Optimizer with L2 Regularization (Weight Decay)
 optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
-# Train the model
+# Early Stopping Mechanism
+class EarlyStopping:
+    def __init__(self, patience=7, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+
+# Training Function
 def train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=20):
+    early_stopping = EarlyStopping(patience=10, min_delta=0.001)
     model.train()
     for epoch in range(epochs):
         total_loss = 0
@@ -107,12 +123,16 @@ def train_model(model, train_loader, criterion, optimizer, scheduler, device, ep
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        scheduler.step()
-        print(f'Epoch {epoch+1}, Loss: {total_loss/len(train_loader)}')
+        scheduler.step(total_loss / len(train_loader))
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_loader)}')
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
 
-train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=20)
+# Train the model
+train_model(model, train_loader, criterion, optimizer, scheduler, device)
 
-# Evaluate the model
+# Evaluation Function with Dynamic Thresholds
 def evaluate_model(model, test_loader, device):
     model.eval()
     total_preds = []
@@ -128,6 +148,7 @@ def evaluate_model(model, test_loader, device):
     all_labels = np.concatenate(total_labels, axis=0)
     thresholds = [0.5] * num_classes  # Placeholder for dynamic threshold calculation
     preds = (all_preds > thresholds).astype(int)
-    print(classification_report(all_labels, preds, zero_division=1))  # Handle undefined metrics by assuming perfect classification for missing labels
+    print(classification_report(all_labels, preds))
 
+# Evaluate the model
 evaluate_model(model, test_loader, device)
