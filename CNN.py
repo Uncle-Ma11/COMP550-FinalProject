@@ -95,7 +95,7 @@ optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 # Train the model
-def train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=20):
+def train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=60):
     model.train()
     for epoch in range(epochs):
         total_loss = 0
@@ -110,7 +110,7 @@ def train_model(model, train_loader, criterion, optimizer, scheduler, device, ep
         scheduler.step()
         print(f'Epoch {epoch+1}, Loss: {total_loss/len(train_loader)}')
 
-train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=20)
+train_model(model, train_loader, criterion, optimizer, scheduler, device, epochs=60)
 
 # Evaluate the model
 def evaluate_model(model, test_loader, device):
