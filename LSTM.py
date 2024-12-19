@@ -146,7 +146,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training Loop with Progress Bar
-    for epoch in range(4):
+    for epoch in range(5):
         model.train()
         total_loss = 0
         loop = tqdm(train_loader, desc=f"Epoch {epoch + 1}", leave=True)

@@ -5,7 +5,7 @@ from nltk.stem import WordNetLemmatizer
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 import torch
 
-DATASET = 2
+DATASET = 1
 
 go_emotions_ds = load_dataset("google-research-datasets/go_emotions", "simplified")
 
